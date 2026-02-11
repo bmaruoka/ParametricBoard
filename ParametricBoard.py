@@ -70,10 +70,10 @@ class BoardExecuteHandler(adsk.core.CommandEventHandler):
             t_nose = inputs.itemById('t_nose').value
             t_tail = inputs.itemById('t_tail').value
             rail_shape = inputs.itemById('rail_shape').value # This will be a decimal 0.0 - 1.0
-            num_slices = inputs.itemById('slices').value     # This is an integer
+            num_slices = inputs.itemById('slices').valueOne     # This is an integer
 
             # Trigger the functions we built earlier
-            draw_board_framework(root, length, max_w, n_rock, t_rock)
+            draw_board_framework(root, length, max_w, n_rock, t_rock, t_nose, t_tail, rail_shape, num_slices)
             
         except:
             app.userInterface.messageBox('Execute Failed:\n{}'.format(traceback.format_exc()))
@@ -89,23 +89,34 @@ def get_bezier_points(p0, p1, p2, p3, steps=20):
     return points
 
 def draw_board_framework(root, length, width, n_rock, t_rock, t_nose, t_tail, rail_shape, num_slices):
+    sketches = root.sketches
     # 1. Clear old geometry (Optional: helps keep the file clean during testing)
+
     
-    # 2. Define our Control Points for Rocker & Outline
-    # Profile Rocker Points (XZ Plane)
+    # --- 1. DRAW VISIBLE ROCKER PROFILE ---
+    rocker_sk = sketches.add(root.xZConstructionPlane)
+    rocker_sk.name = "MASTER_ROCKER"
+    
     rp0 = adsk.core.Point3D.create(0, t_rock, 0)
     rp1 = adsk.core.Point3D.create(length * 0.3, 0, 0) 
     rp2 = adsk.core.Point3D.create(length * 0.7, 0, 0) 
     rp3 = adsk.core.Point3D.create(length, n_rock, 0)
     
-    # Outline Points (XY Plane)
+    rocker_points = get_bezier_points(rp0, rp1, rp2, rp3)
+    rocker_sk.sketchCurves.sketchFittedSplines.add(rocker_points)
+
+    # --- 2. DRAW VISIBLE OUTLINE ---
+    outline_sk = sketches.add(root.xYConstructionPlane)
+    outline_sk.name = "MASTER_OUTLINE"
+    
     op0 = adsk.core.Point3D.create(0, (width * 0.3), 0) # Tail width
     op1 = adsk.core.Point3D.create(length * 0.4, (width / 2), 0) # Wide point
     op2 = adsk.core.Point3D.create(length * 0.8, (width / 2), 0)
-    op3 = adsk.core.Point3D.create(length, 0.01, 0) # Nose point
-
+    op3 = adsk.core.Point3D.create(length, 0.001, 0) # Nose point
+    
+    outline_points = get_bezier_points(op0, op1, op2, op3)
+    outline_sk.sketchCurves.sketchFittedSplines.add(outline_points)
     loft_sections = adsk.core.ObjectCollection.create()
-
     # 3. Create the Slices
     for i in range(num_slices + 1):
         t = i / num_slices
@@ -124,25 +135,68 @@ def draw_board_framework(root, length, width, n_rock, t_rock, t_nose, t_tail, ra
         else:
             local_thick = max_thick - ((t - 0.5) * 2) * (max_thick - t_nose)
 
-        # 4. Create Plane and Sketch
+        """ # 4. Create Plane and Sketch
         planes = root.constructionPlanes
         plane_input = planes.createInput()
-        plane_input.setByOffset(root.xYZConstructionPlane, adsk.core.ValueInput.createByReal(curr_x))
+        plane_input.setByOffset(root.yZConstructionPlane, adsk.core.ValueInput.createByReal(curr_x))
         plane = planes.add(plane_input)
         
         sketch = root.sketches.add(plane)
-        
-        # Draw the cross-section
+         """
+        """ # Draw the cross-section
         # Origin of sketch is (0,0) which is on the stringer at the rocker height
-        p_bottom = adsk.core.Point3D.create(0, 0, 0)
-        p_rail = adsk.core.Point3D.create(outline_sample, local_thick * rail_shape, 0)
-        p_deck = adsk.core.Point3D.create(0, local_thick, 0)
+        #p_bottom = adsk.core.Point3D.create(0, 0, 0)
+        #p_rail = adsk.core.Point3D.create(0, outline_sample,local_thick * rail_shape)
+        #p_deck = adsk.core.Point3D.create(0, 0, rocker_sample + local_thick)
+        # 1. Bottom point sitting on the rocker line
+        p_bottom = adsk.core.Point3D.create(0, rocker_sample, 0)
+        
+        # 2. Rail point: Out by 'outline_sample', up by rocker + tucked height
+        p_rail = adsk.core.Point3D.create(outline_sample, rocker_sample + (local_thick * rail_shape), 0)
+        
+        # 3. Deck point: Back to center (0), up by rocker + total thickness
+        p_deck = adsk.core.Point3D.create(0, rocker_sample + local_thick, 0)
         
         pts = adsk.core.ObjectCollection.create()
         pts.add(p_bottom)
         pts.add(p_rail)
         pts.add(p_deck)
+        sketch.sketchCurves.sketchFittedSplines.add(pts) """
+        # 4. Create Plane and Sketch
+        planes = root.constructionPlanes
+        plane_input = planes.createInput()
+        plane_input.setByOffset(root.yZConstructionPlane, adsk.core.ValueInput.createByReal(curr_x))
+        plane = planes.add(plane_input)
+        
+        sketch = root.sketches.add(plane)
+        
+        # --- THE FIX: WORLD-TO-SKETCH MAPPING ---
+        # We define where these points should be in the 3D WORLD first.
+        # World Axes: X = Length, Y = Width, Z = Height (Rocker/Thick)
+        
+        # Bottom Stringer Point
+        p_bottom_world = adsk.core.Point3D.create(curr_x, 0, rocker_sample)
+        
+        # Rail Apex Point
+        p_rail_world = adsk.core.Point3D.create(curr_x, outline_sample, rocker_sample + (local_thick * rail_shape))
+        
+        # Deck Stringer Point
+        p_deck_world = adsk.core.Point3D.create(curr_x, 0, rocker_sample + local_thick)
+        
+        # Now we "Project" those 3D world points into the 2D sketch plane
+        p_bottom = sketch.modelToSketchSpace(p_bottom_world)
+        p_rail = sketch.modelToSketchSpace(p_rail_world)
+        p_deck = sketch.modelToSketchSpace(p_deck_world)
+        
+        # 5. Draw the Spline using these transformed points
+        pts = adsk.core.ObjectCollection.create()
+        pts.add(p_bottom)
+        pts.add(p_rail)
+        pts.add(p_deck)
         sketch.sketchCurves.sketchFittedSplines.add(pts)
+
+        # 6. Close the profile (Crucial for the Loft to recognize it as a shape)
+        sketch.sketchCurves.sketchLines.addByTwoPoints(p_bottom, p_deck)
         
         if sketch.profiles.count > 0:
             loft_sections.add(sketch.profiles.item(0))
